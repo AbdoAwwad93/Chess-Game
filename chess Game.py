@@ -5,6 +5,7 @@ from tkinter import messagebox
 from PIL import Image, ImageTk
 import copy
 import time
+import pygame
 
 # --------------------------- PIECE VALUES --------------------------- #
 PIECE_SCORES = {
@@ -89,6 +90,23 @@ class ChessGame:
         self.white_rooks_moved = [False, False]
         self.black_rooks_moved = [False, False]
         self.en_passant_target = None
+        self.flipped = False  # Track board orientation
+        import os
+        # Initialize pygame mixer for sounds
+        pygame.mixer.init()
+        self.sounds = {}
+        for sound_name in ['move', 'capture', 'check']:
+            path = os.path.join('Sounds', 'chess sound effect.mp3')  # Adjust path if needed
+            if not os.path.exists(path):
+                print(f"[WARNING] Sound file not found: {path}. Sound for '{sound_name}' will not play.")
+                self.sounds[sound_name] = None
+            else:
+                try:
+                    self.sounds[sound_name] = pygame.mixer.Sound(path)
+                except Exception as e:
+                    print(f"[ERROR] Failed to load sound '{sound_name}' from {path}: {e}")
+                    self.sounds[sound_name] = None
+
         self.load_images()
         self.draw_board()
         self.canvas.bind("<Button-1>", self.click_handler)
@@ -107,7 +125,7 @@ class ChessGame:
     def load_images(self):
         for color in ['w', 'b']:
             for name in ["rook", "knight", "bishop", "queen", "king", "pawn"]:
-                img = Image.open(f"{color}_{name}.png").resize((80, 80))
+                img = Image.open(f"Images/{color}_{name}.png").resize((80, 80))
                 self.images[f"{color}_{name}"] = ImageTk.PhotoImage(img)
 
     def draw_board(self):
@@ -118,15 +136,35 @@ class ChessGame:
         dark_square = "#b58863"   # Dark brown
         highlight_color = "#2ecc71"  # Green for selected square
         legal_move_color = "#3498db"  # Blue for legal moves
+        capture_move_color = "#e74c3c"  # Red for capture moves
+        
+        # Prepare available moves for selected piece
+        available_moves = []
+        capture_moves = []
+        if self.selected:
+            src = self.selected
+            for r2 in range(8):
+                for c2 in range(8):
+                    if self.valid_move(src, (r2, c2)):
+                        if self.board[r2][c2] and self.board[r2][c2].color != self.board[src[0]][src[1]].color:
+                            capture_moves.append((r2, c2))
+                        else:
+                            available_moves.append((r2, c2))
         
         # Draw squares
         for r in range(8):
             for c in range(8):
-                x1, y1 = c*80, r*80
+                # Flip coordinates if needed
+                draw_r = 7 - r if self.flipped else r
+                draw_c = 7 - c if self.flipped else c
+                x1, y1 = draw_c*80, draw_r*80
                 x2, y2 = x1+80, y1+80
                 
                 # Draw square
                 color = light_square if (r+c)%2 == 0 else dark_square
+                # If this is a capture move, fill the whole square with capture color
+                if self.selected and (r, c) in capture_moves:
+                    color = capture_move_color
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
                 
                 # Highlight selected square
@@ -134,9 +172,11 @@ class ChessGame:
                     self.canvas.create_rectangle(x1, y1, x2, y2, fill=highlight_color, outline="")
                 
                 # Highlight legal moves
-                if self.selected:
-                    if self.valid_move(self.selected, (r, c)):
-                        self.canvas.create_oval(x1+30, y1+30, x2-30, y2-30, fill=legal_move_color, outline="")
+                if self.selected and (r, c) in available_moves:
+                    self.canvas.create_oval(x1+30, y1+30, x2-30, y2-30, fill=legal_move_color, outline="")
+                # Optionally, still draw an oval for capture (for extra emphasis)
+                if self.selected and (r, c) in capture_moves:
+                    self.canvas.create_oval(x1+30, y1+30, x2-30, y2-30, fill=capture_move_color, outline="")
                 
                 # Draw piece
                 piece = self.board[r][c]
@@ -147,24 +187,44 @@ class ChessGame:
         files = "abcdefgh"
         ranks = "87654321"
         for i in range(8):
+            file_idx = 7 - i if self.flipped else i
+            rank_idx = i if self.flipped else 7 - i
             # Files (letters)
-            self.canvas.create_text(i*80 + 40, 640 - 10, text=files[i], font=("Arial", 10))
+            self.canvas.create_text(i*80 + 40, 640 - 10, text=files[file_idx], font=("Arial", 10))
             # Ranks (numbers)
-            self.canvas.create_text(10, i*80 + 40, text=ranks[i], font=("Arial", 10))
+            self.canvas.create_text(10, i*80 + 40, text=ranks[rank_idx], font=("Arial", 10))
 
     def click_handler(self, event):
         if self.turn != self.ai_color:
-            row, col = event.y // 80, event.x // 80
+            # Flip coordinates if needed
+            if self.flipped:
+                row = 7 - (event.y // 80)
+                col = 7 - (event.x // 80)
+            else:
+                row, col = event.y // 80, event.x // 80
             piece = self.board[row][col]
             if self.selected:
                 if self.valid_move(self.selected, (row, col)):
                     self.make_move(self.selected, (row, col))
                     self.turn = 'b' if self.turn == 'w' else 'w'
+                    self.selected = None
                     self.draw_board()
-                    self.root.after(100, self.ai_move)
-                self.selected = None
+                    # Wait for sound before AI moves
+                    def after_move_wait():
+                        if pygame.mixer.get_busy():
+                            self.root.after(50, after_move_wait)
+                        else:
+                            self.ai_move()
+                    self.root.after(50, after_move_wait)
+                else:
+                    # If clicked an invalid move, keep selection
+                    if piece and piece.color == self.turn:
+                        self.selected = (row, col)
+                    else:
+                        self.selected = None
             elif piece and piece.color == self.turn:
                 self.selected = (row, col)
+            self.draw_board()
 
     def valid_move(self, src, dst):
         src_row, src_col = src
@@ -491,6 +551,43 @@ class ChessGame:
             'promotion': None
         }
 
+        # --- Play move/capture/check sounds ---
+        sound_played = False
+        sound_obj = None
+        # Capture
+        if target or (piece.name == "pawn" and abs(dst_col - src_col) == 1 and not target):
+            if self.sounds.get('capture'):
+                try:
+                    self.sounds['capture'].play()
+                except Exception as e:
+                    print(f"[ERROR] Failed to play capture sound: {e}")
+                sound_played = True
+                sound_obj = self.sounds['capture']
+        # Check
+        elif self.is_in_check(self.get_opponent(piece.color)):
+            if self.sounds.get('check'):
+                try:
+                    self.sounds['check'].play()
+                except Exception as e:
+                    print(f"[ERROR] Failed to play check sound: {e}")
+                sound_played = True
+                sound_obj = self.sounds['check']
+        # Regular move
+        if not sound_played and self.sounds.get('move'):
+            try:
+                self.sounds['move'].play()
+            except Exception as e:
+                print(f"[ERROR] Failed to play move sound: {e}")
+            sound_obj = self.sounds['move']
+
+        # Helper to wait for sound before AI moves
+        def wait_for_sound_and_ai():
+            if pygame.mixer.get_busy():
+                self.root.after(50, wait_for_sound_and_ai)
+            else:
+                self.ai_move()
+
+
         # Handle castling
         if piece.name == "king" and abs(dst_col - src_col) == 2:
             move_record['castling'] = 'queenside' if dst_col < src_col else 'kingside'
@@ -632,6 +729,11 @@ class ChessGame:
                 self.make_move(best_move[0], best_move[1])
                 self.turn = 'b' if self.turn == 'w' else 'w'
                 self.draw_board()
+                # Wait for sound before allowing next player move (if needed)
+                def after_ai_move_wait():
+                    if pygame.mixer.get_busy():
+                        self.root.after(50, after_ai_move_wait)
+                self.root.after(50, after_ai_move_wait)
             else:
                 # No legal moves available
                 if self.is_in_check(self.ai_color):
@@ -793,6 +895,30 @@ class ChessGame:
                         if r in [3,4] and c in [3,4]:
                             development_score += 10
         score += development_score
+
+        # Protection/defense score
+        # Penalize for each AI piece that is attacked and not defended, bonus for defended pieces
+        protection_score = 0
+        for r in range(8):
+            for c in range(8):
+                piece = board[r][c]
+                if piece and piece.color == self.ai_color:
+                    if self.is_square_under_attack((r, c), self.get_opponent(self.ai_color)):
+                        # Is it defended?
+                        defended = False
+                        for dr in range(8):
+                            for dc in range(8):
+                                defender = board[dr][dc]
+                                if defender and defender.color == self.ai_color and self.valid_move((dr, dc), (r, c)):
+                                    defended = True
+                                    break
+                            if defended:
+                                break
+                        if not defended:
+                            protection_score -= PIECE_SCORES[piece.name] // 2  # Penalize for hanging pieces
+                        else:
+                            protection_score += 2  # Small bonus for defended pieces
+        score += protection_score
 
         # Position score
         position_score = 0
@@ -977,7 +1103,7 @@ class ChessGame:
         height = setup_window.winfo_height()
         x = (setup_window.winfo_screenwidth() // 2) - (width // 2)
         y = (setup_window.winfo_screenheight() // 2) - (height // 2)
-        setup_window.geometry(f'{width}x{height}+{x}+{y}')
+        setup_window.geometry(f'300x500')
         
         # Create main frame
         main_frame = tk.Frame(setup_window, bg="#2c3e50")
@@ -1030,7 +1156,10 @@ class ChessGame:
         def start_game():
             self.ai_color = 'b' if side_var.get() == "white" else 'w'
             self.search_depth = int(diff_var.get())
+            # Flip board if user chooses black
+            self.flipped = side_var.get() == "black"
             setup_window.destroy()
+            self.draw_board()
             if self.ai_color == 'w':
                 self.ai_move()
         
